@@ -161,22 +161,22 @@ func RunXORRepeatedExperiment() {
 	experiment := func(seed int64, inception, context bool, results chan<- Result) {
 		results <- XORExperiment(seed, 3, inception, context)
 	}
-	normalStats, contextStats := Statistics{}, Statistics{}
-	normalResults, contextResults := make(chan Result, 8), make(chan Result, 8)
+	normalStats, inceptionStats := Statistics{}, Statistics{}
+	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
 	for i := 1; i <= 256; i++ {
 		go experiment(int64(i), false, false, normalResults)
-		go experiment(int64(i), true, false, contextResults)
+		go experiment(int64(i), true, false, inceptionResults)
 	}
-	for normalStats.Count < 256 || contextStats.Count < 256 {
+	for normalStats.Count < 256 || inceptionStats.Count < 256 {
 		select {
 		case result := <-normalResults:
 			normalStats.Aggregate(result)
-		case result := <-contextResults:
-			contextStats.Aggregate(result)
+		case result := <-inceptionResults:
+			inceptionStats.Aggregate(result)
 		}
 	}
 	fmt.Printf("normal: %s\n", normalStats.String())
-	fmt.Printf("inception: %s\n", contextStats.String())
+	fmt.Printf("inception: %s\n", inceptionStats.String())
 }
 
 // RunXORExperiment runs an xor experiment once
