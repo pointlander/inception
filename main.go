@@ -1,3 +1,7 @@
+// Copyright 2019 The Inception Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package main
 
 import (
@@ -357,26 +361,29 @@ func RunXORExperiment(seed int64) {
 	}
 
 	p.Title.Text = "xor epochs"
-	p.X.Label.Text = "time"
+	p.X.Label.Text = "epoch"
 	p.Y.Label.Text = "cost"
 
-	scatter, err := plotter.NewScatter(pointsNormal)
+	normalScatter, err := plotter.NewScatter(pointsNormal)
 	if err != nil {
 		panic(err)
 	}
-	scatter.GlyphStyle.Radius = vg.Length(1)
-	scatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	scatter.GlyphStyle.Color = color.RGBA{R: 255, A: 255}
-	p.Add(scatter)
+	normalScatter.GlyphStyle.Radius = vg.Length(1)
+	normalScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+	normalScatter.GlyphStyle.Color = color.RGBA{R: 255, A: 255}
 
-	scatter, err = plotter.NewScatter(pointsInception)
+	inceptionScatter, err := plotter.NewScatter(pointsInception)
 	if err != nil {
 		panic(err)
 	}
-	scatter.GlyphStyle.Radius = vg.Length(1)
-	scatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	scatter.GlyphStyle.Color = color.RGBA{B: 255, A: 255}
-	p.Add(scatter)
+	inceptionScatter.GlyphStyle.Radius = vg.Length(1)
+	inceptionScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+	inceptionScatter.GlyphStyle.Color = color.RGBA{B: 255, A: 255}
+
+	p.Add(normalScatter, inceptionScatter)
+	p.Legend.Top = true
+	p.Legend.Add("normal", normalScatter)
+	p.Legend.Add("inception", inceptionScatter)
 
 	err = p.Save(8*vg.Inch, 8*vg.Inch, "cost_xor.png")
 	if err != nil {
@@ -428,26 +435,29 @@ func RunIrisExperiment(seed int64) {
 	}
 
 	p.Title.Text = "iris epochs"
-	p.X.Label.Text = "time"
+	p.X.Label.Text = "epoch"
 	p.Y.Label.Text = "cost"
 
-	scatter, err := plotter.NewScatter(pointsNormal)
+	normalScatter, err := plotter.NewScatter(pointsNormal)
 	if err != nil {
 		panic(err)
 	}
-	scatter.GlyphStyle.Radius = vg.Length(1)
-	scatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	scatter.GlyphStyle.Color = color.RGBA{R: 255, A: 255}
-	p.Add(scatter)
+	normalScatter.GlyphStyle.Radius = vg.Length(1)
+	normalScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+	normalScatter.GlyphStyle.Color = color.RGBA{R: 255, A: 255}
 
-	scatter, err = plotter.NewScatter(pointsInception)
+	inceptionScatter, err := plotter.NewScatter(pointsInception)
 	if err != nil {
 		panic(err)
 	}
-	scatter.GlyphStyle.Radius = vg.Length(1)
-	scatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	scatter.GlyphStyle.Color = color.RGBA{B: 255, A: 255}
-	p.Add(scatter)
+	inceptionScatter.GlyphStyle.Radius = vg.Length(1)
+	inceptionScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+	inceptionScatter.GlyphStyle.Color = color.RGBA{B: 255, A: 255}
+
+	p.Add(normalScatter, inceptionScatter)
+	p.Legend.Top = true
+	p.Legend.Add("normal", normalScatter)
+	p.Legend.Add("inception", inceptionScatter)
 
 	err = p.Save(8*vg.Inch, 8*vg.Inch, "cost_iris.png")
 	if err != nil {
