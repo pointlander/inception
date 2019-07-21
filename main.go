@@ -409,8 +409,8 @@ func RunIrisRepeatedExperiment() {
 
 // RunIrisExperiment runs an iris experiment once
 func RunIrisExperiment(seed int64) {
-	normal := IrisExperiment(seed, 5, false, false)
-	inception := IrisExperiment(seed, 5, true, false)
+	normal := IrisExperiment(seed, 3, false, false)
+	inception := IrisExperiment(seed, 3, true, false)
 
 	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
 	for i, cost := range normal.Costs {
