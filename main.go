@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 )
 
 // Result an experiment result
@@ -35,6 +36,24 @@ func (s *Statistics) Aggregate(result Result) {
 // String generates a string for the statistics
 func (s *Statistics) String() string {
 	return fmt.Sprintf("%f %f", float64(s.Converged)/float64(s.Count), float64(s.Epochs)/float64(s.Converged))
+}
+
+// Optimizer an optimizer type
+type Optimizer int
+
+const (
+	// OptimizerMomentum basic optimizer
+	OptimizerMomentum Optimizer = iota
+	// OptimizerAdam the adam opptimizer
+	OptimizerAdam
+)
+
+func pow(x, y float32) float32 {
+	return float32(math.Pow(float64(x), float64(y)))
+}
+
+func sqrt(x float32) float32 {
+	return float32(math.Sqrt(float64(x)))
 }
 
 var (
