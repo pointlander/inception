@@ -18,18 +18,51 @@ import (
 )
 
 // XORExperiment xor neural network experiment
-func XORExperiment(seed int64, width int, optimizer Optimizer, inception, context bool) Result {
+func XORExperiment(seed int64, width, depth int, optimizer Optimizer, inception, dct, context bool) Result {
 	rnd, costs, converged := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false
 	random32 := func(a, b float32) float32 {
 		return (b-a)*rnd.Float32() + a
 	}
 
 	input, output := tf32.NewV(2), tf32.NewV(1)
-	w1, w1a, w1b := tf32.NewV(2, width), tf32.NewV(2, 2), tf32.NewV(2, width)
-	b1, b1a, b1b := tf32.NewV(width), tf32.NewV(width, width), tf32.NewV(width)
-	w2, w2a, w2b := tf32.NewV(width), tf32.NewV(width, width), tf32.NewV(width)
-	b2, b2a, b2b := tf32.NewV(1), tf32.NewV(1), tf32.NewV(1)
-	parameters := []*tf32.V{&w1, &w1a, &w1b, &b1, &b1a, &b1b, &w2, &w2a, &w2b, &b2, &b2a, &b2b}
+	w1, b1, w2, b2 := tf32.NewV(2, width), tf32.NewV(width), tf32.NewV(width), tf32.NewV(1)
+	parameters, zero := []*tf32.V{&w1, &b1, &w2, &b2}, []*tf32.V{}
+	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
+	if dct {
+		t1, tt1 := DCT2(2)
+		t2, tt2 := DCT2(width)
+		t3, tt3 := DCT2(width)
+		t4, tt4 := DCT2(1)
+		w1b, b1b, w2b, b2b := tf32.NewV(2, width), tf32.NewV(width), tf32.NewV(width), tf32.NewV(1)
+		m1 = tf32.Add(tf32.Mul(tt1.Meta(), tf32.T(tf32.Mul(m1, t1.Meta()))), w1b.Meta())
+		m1a = tf32.Add(tf32.Mul(tt2.Meta(), tf32.T(tf32.Mul(m1a, t2.Meta()))), b1b.Meta())
+		m2 = tf32.Add(tf32.Mul(tt3.Meta(), tf32.T(tf32.Mul(m2, t3.Meta()))), w2b.Meta())
+		m2a = tf32.Add(tf32.Mul(tt4.Meta(), tf32.T(tf32.Mul(m2a, t4.Meta()))), b2b.Meta())
+		zero = append(zero, &t1, &tt1, &t2, &tt2, &t3, &tt3, &t4, &tt4)
+		parameters = append(parameters, &w1b, &b1b, &w2b, &b2b)
+	} else if inception {
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(2, 2), tf32.NewV(2, width)
+			m1 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(width, width), tf32.NewV(width)
+			m1a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1a)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(width, width), tf32.NewV(width)
+			m2 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(1), tf32.NewV(1)
+			m2a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2a)
+			parameters = append(parameters, &a, &b)
+		}
+	}
+
 	var deltas, m, v [][]float32
 	for _, p := range parameters {
 		for i := 0; i < cap(p.X); i++ {
@@ -43,13 +76,7 @@ func XORExperiment(seed int64, width int, optimizer Optimizer, inception, contex
 			v = append(v, make([]float32, len(p.X)))
 		}
 	}
-	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
-	if inception {
-		m1 = tf32.Add(tf32.Mul(w1a.Meta(), m1), w1b.Meta())
-		m1a = tf32.Add(tf32.Mul(b1a.Meta(), m1a), b1b.Meta())
-		m2 = tf32.Add(tf32.Mul(w2a.Meta(), m2), w2b.Meta())
-		m2a = tf32.Add(tf32.Mul(b2a.Meta(), m2a), b2b.Meta())
-	}
+
 	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
 	l2 := tf32.Sigmoid(tf32.Add(tf32.Mul(m2, l1), m2a))
 	cost := tf32.Quadratic(l2, output.Meta())
@@ -93,6 +120,7 @@ func XORExperiment(seed int64, width int, optimizer Optimizer, inception, contex
 		table[i] = &data[i]
 	}
 
+	rnd = rand.New(rand.NewSource(seed))
 	// momentum parameters
 	alpha, eta := float32(.1), float32(.6)
 	// adam parameters
@@ -105,6 +133,9 @@ func XORExperiment(seed int64, width int, optimizer Optimizer, inception, contex
 		total := float32(0.0)
 		for j := range table {
 			for _, p := range parameters {
+				p.Zero()
+			}
+			for _, p := range zero {
 				p.Zero()
 			}
 			input.Set(table[j].input)
@@ -168,7 +199,7 @@ func XORExperiment(seed int64, width int, optimizer Optimizer, inception, contex
 // RunXORRepeatedExperiment runs multiple xor experiments
 func RunXORRepeatedExperiment() {
 	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- XORExperiment(seed, 3, OptimizerAdam, inception, context)
+		results <- XORExperiment(seed, 3, 4, OptimizerAdam, inception, false, context)
 	}
 	normalStats, inceptionStats := Statistics{}, Statistics{}
 	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
@@ -190,8 +221,8 @@ func RunXORRepeatedExperiment() {
 
 // RunXORExperiment runs an xor experiment once
 func RunXORExperiment(seed int64) {
-	normal := XORExperiment(seed, 3, OptimizerAdam, false, false)
-	inception := XORExperiment(seed, 3, OptimizerAdam, true, false)
+	normal := XORExperiment(seed, 3, 4, OptimizerAdam, false, false, false)
+	inception := XORExperiment(seed, 3, 4, OptimizerAdam, true, false, false)
 
 	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
 	for i, cost := range normal.Costs {

@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"math"
+
+	"github.com/pointlander/gradient/tf32"
 )
 
 // Result an experiment result
@@ -54,6 +56,39 @@ func pow(x, y float32) float32 {
 
 func sqrt(x float32) float32 {
 	return float32(math.Sqrt(float64(x)))
+}
+
+func cos(a float32) float32 {
+	return float32(math.Cos(float64(a)))
+}
+
+// DCT2 create dct2 coefficient matrices
+// https://edoras.sdsu.edu/doc/matlab/toolbox/images/transfo7.html
+func DCT2(size int) (t, tt tf32.V) {
+	m := float32(size)
+	t, tt = tf32.NewV(size, size), tf32.NewV(size, size)
+	for p := 0; p < size; p++ {
+		if p == 0 {
+			for q := 0; q < size; q++ {
+				t.X = append(t.X, 1/sqrt(m))
+			}
+			continue
+		}
+		for q := 0; q < size; q++ {
+			t.X = append(t.X, sqrt(2/m)*cos(math.Pi*(2*float32(q)+1)*float32(p)/(2*m)))
+		}
+	}
+
+	for q := 0; q < size; q++ {
+		for p := 0; p < size; p++ {
+			if p == 0 {
+				tt.X = append(tt.X, 1/sqrt(m))
+				continue
+			}
+			tt.X = append(tt.X, sqrt(2/m)*cos(math.Pi*(2*float32(q)+1)*float32(p)/(2*m)))
+		}
+	}
+	return
 }
 
 var (
