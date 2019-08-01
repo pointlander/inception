@@ -61,7 +61,7 @@ func load() {
 }
 
 // IrisExperiment iris neural network experiment
-func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, context bool) Result {
+func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, inception, dct, context bool) Result {
 	once.Do(load)
 
 	rnd, costs, converged, misses := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false, 0
@@ -70,11 +70,44 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 	}
 
 	input, output := tf32.NewV(4), tf32.NewV(3)
-	w1, w1a, w1b := tf32.NewV(4, width), tf32.NewV(4, 4), tf32.NewV(4, width)
-	b1, b1a, b1b := tf32.NewV(width), tf32.NewV(width, width), tf32.NewV(width)
-	w2, w2a, w2b := tf32.NewV(width, 3), tf32.NewV(width, width), tf32.NewV(width, 3)
-	b2, b2a, b2b := tf32.NewV(3), tf32.NewV(3, 3), tf32.NewV(3)
-	parameters := []*tf32.V{&w1, &w1a, &w1b, &b1, &b1a, &b1b, &w2, &w2a, &w2b, &b2, &b2a, &b2b}
+	w1, b1, w2, b2 := tf32.NewV(4, width), tf32.NewV(width), tf32.NewV(width, 3), tf32.NewV(3)
+	parameters, zero := []*tf32.V{&w1, &b1, &w2, &b2}, []*tf32.V{}
+	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
+	if dct {
+		t1, tt1 := DCT2(4)
+		t2, tt2 := DCT2(width)
+		t3, tt3 := DCT2(width)
+		t4, tt4 := DCT2(3)
+		w1b, b1b, w2b, b2b := tf32.NewV(4, width), tf32.NewV(width), tf32.NewV(width, 3), tf32.NewV(3)
+		m1 = tf32.Add(tf32.Mul(tt1.Meta(), tf32.T(tf32.Mul(m1, t1.Meta()))), w1b.Meta())
+		m1a = tf32.Add(tf32.Mul(tt2.Meta(), tf32.T(tf32.Mul(m1a, t2.Meta()))), b1b.Meta())
+		m2 = tf32.Add(tf32.Mul(tt3.Meta(), tf32.T(tf32.Mul(m2, t3.Meta()))), w2b.Meta())
+		m2a = tf32.Add(tf32.Mul(tt4.Meta(), tf32.T(tf32.Mul(m2a, t4.Meta()))), b2b.Meta())
+		zero = append(zero, &t1, &tt1, &t2, &tt2, &t3, &tt3, &t4, &tt4)
+		parameters = append(parameters, &w1b, &b1b, &w2b, &b2b)
+	} else if inception {
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(4, 4), tf32.NewV(4, width)
+			m1 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(width, width), tf32.NewV(width)
+			m1a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1a)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(width, width), tf32.NewV(width, 3)
+			m2 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(3, 3), tf32.NewV(3)
+			m2a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2a)
+			parameters = append(parameters, &a, &b)
+		}
+	}
+
 	var deltas, m, v [][]float32
 	for _, p := range parameters {
 		for i := 0; i < cap(p.X); i++ {
@@ -88,13 +121,7 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 			v = append(v, make([]float32, len(p.X)))
 		}
 	}
-	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
-	if inception {
-		m1 = tf32.Add(tf32.Mul(w1a.Meta(), m1), w1b.Meta())
-		m1a = tf32.Add(tf32.Mul(b1a.Meta(), m1a), b1b.Meta())
-		m2 = tf32.Add(tf32.Mul(w2a.Meta(), m2), w2b.Meta())
-		m2a = tf32.Add(tf32.Mul(b2a.Meta(), m2a), b2b.Meta())
-	}
+
 	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
 	l2 := tf32.Softmax(tf32.Add(tf32.Mul(m2, l1), m2a))
 	cost := tf32.CrossEntropy(l2, output.Meta())
@@ -133,6 +160,9 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 		total := float32(0.0)
 		for j := range table {
 			for _, p := range parameters {
+				p.Zero()
+			}
+			for _, p := range zero {
 				p.Zero()
 			}
 			in := make([]float32, len(table[j].iris.Measures))
@@ -240,7 +270,7 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 // RunIrisRepeatedExperiment runs multiple iris experiments
 func RunIrisRepeatedExperiment() {
 	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- IrisExperiment(seed, 3, OptimizerAdam, inception, context)
+		results <- IrisExperiment(seed, 3, 4, OptimizerAdam, inception, false, context)
 	}
 	normalStats, inceptionStats := Statistics{}, Statistics{}
 	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
@@ -262,8 +292,8 @@ func RunIrisRepeatedExperiment() {
 
 // RunIrisExperiment runs an iris experiment once
 func RunIrisExperiment(seed int64) {
-	normal := IrisExperiment(seed, 3, OptimizerAdam, false, false)
-	inception := IrisExperiment(seed, 3, OptimizerAdam, true, false)
+	normal := IrisExperiment(seed, 3, 4, OptimizerAdam, false, false, false)
+	inception := IrisExperiment(seed, 3, 4, OptimizerAdam, true, false, false)
 
 	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
 	for i, cost := range normal.Costs {
