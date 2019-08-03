@@ -69,7 +69,7 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 		return (b-a)*rnd.Float32() + a
 	}
 
-	batchSize := 2
+	batchSize := 10
 
 	var input, output tf32.V
 	if batch {
@@ -207,13 +207,14 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 		}
 	}
 
+	length := len(table)
 	if batch {
 		for i := 0; i < 10000; i++ {
 			for i := range table {
-				j := i + rnd.Intn(len(data)-i)
+				j := i + rnd.Intn(length-i)
 				table[i], table[j] = table[j], table[i]
 			}
-			total, length := float32(0.0), len(table)
+			total := float32(0.0)
 			for j := 0; j < length; j += batchSize {
 				for _, p := range parameters {
 					p.Zero()
@@ -224,11 +225,12 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 
 				inputs, outputs := make([]float32, 0, 4*batchSize), make([]float32, 0, 3*batchSize)
 				for k := 0; k < batchSize; k++ {
-					for _, measure := range table[(j+k)%length].iris.Measures {
+					index := (j + k) % length
+					for _, measure := range table[index].iris.Measures {
 						inputs = append(inputs, float32(measure))
 					}
 					out := make([]float32, 3)
-					out[iris.Labels[table[(j+k)%length].iris.Label]] = 1
+					out[iris.Labels[table[index].iris.Label]] = 1
 					outputs = append(outputs, out...)
 				}
 				input.Set(inputs)
@@ -245,7 +247,7 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 	} else {
 		for i := 0; i < 10000; i++ {
 			for i := range table {
-				j := i + rnd.Intn(len(data)-i)
+				j := i + rnd.Intn(length-i)
 				table[i], table[j] = table[j], table[i]
 			}
 			total := float32(0.0)
@@ -318,7 +320,7 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 // RunIrisRepeatedExperiment runs multiple iris experiments
 func RunIrisRepeatedExperiment() {
 	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- IrisExperiment(seed, 3, 1, OptimizerAdam, true, inception, false, context)
+		results <- IrisExperiment(seed, 3, 4, OptimizerAdam, true, inception, false, context)
 	}
 	normalStats, inceptionStats := Statistics{}, Statistics{}
 	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
@@ -340,8 +342,8 @@ func RunIrisRepeatedExperiment() {
 
 // RunIrisExperiment runs an iris experiment once
 func RunIrisExperiment(seed int64) {
-	normal := IrisExperiment(seed, 3, 1, OptimizerAdam, true, false, false, false)
-	inception := IrisExperiment(seed, 3, 1, OptimizerAdam, true, true, false, false)
+	normal := IrisExperiment(seed, 3, 4, OptimizerAdam, true, false, false, false)
+	inception := IrisExperiment(seed, 3, 4, OptimizerAdam, true, true, false, false)
 
 	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
 	for i, cost := range normal.Costs {
