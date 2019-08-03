@@ -18,13 +18,18 @@ import (
 )
 
 // XORExperiment xor neural network experiment
-func XORExperiment(seed int64, width, depth int, optimizer Optimizer, inception, dct, context bool) Result {
+func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inception, dct, context bool) Result {
 	rnd, costs, converged := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false
 	random32 := func(a, b float32) float32 {
 		return (b-a)*rnd.Float32() + a
 	}
 
-	input, output := tf32.NewV(2), tf32.NewV(1)
+	var input, output tf32.V
+	if batch {
+		input, output = tf32.NewV(2, 4), tf32.NewV(1, 4)
+	} else {
+		input, output = tf32.NewV(2), tf32.NewV(1)
+	}
 	w1, b1, w2, b2 := tf32.NewV(2, width), tf32.NewV(width), tf32.NewV(width), tf32.NewV(1)
 	parameters, zero := []*tf32.V{&w1, &b1, &w2, &b2}, []*tf32.V{}
 	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
@@ -79,7 +84,7 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, inception,
 
 	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
 	l2 := tf32.Sigmoid(tf32.Add(tf32.Mul(m2, l1), m2a))
-	cost := tf32.Quadratic(l2, output.Meta())
+	cost := tf32.Avg(tf32.Quadratic(l2, output.Meta()))
 
 	type Datum struct {
 		input        []float32
@@ -125,53 +130,81 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, inception,
 	alpha, eta := float32(.1), float32(.6)
 	// adam parameters
 	a, beta1, beta2, epsilon := float32(.001), float32(.9), float32(.999), float32(1E-8)
-	for i := 0; i < 10000; i++ {
-		for i := range table {
-			j := i + rnd.Intn(len(data)-i)
-			table[i], table[j] = table[j], table[i]
+	optimize := func(i int) {
+		for k, p := range parameters {
+			for l, d := range p.D {
+				switch optimizer {
+				case OptimizerMomentum:
+					deltas[k][l] = alpha*deltas[k][l] - eta*d
+					p.X[l] += deltas[k][l]
+				case OptimizerAdam:
+					m[k][l] = beta1*m[k][l] + (1-beta1)*d
+					v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
+					t := float32(i + 1)
+					mCorrected := m[k][l] / (1 - pow(beta1, t))
+					vCorrected := v[k][l] / (1 - pow(beta2, t))
+					p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
+				}
+			}
 		}
-		total := float32(0.0)
-		for j := range table {
+	}
+
+	if batch {
+		inputs, outputs := make([]float32, 0, 16), make([]float32, 0, 4)
+		for i := range table {
+			inputs = append(inputs, table[i].input...)
+			outputs = append(outputs, table[i].output...)
+		}
+		input.Set(inputs)
+		output.Set(outputs)
+		for i := 0; i < 10000; i++ {
 			for _, p := range parameters {
 				p.Zero()
 			}
 			for _, p := range zero {
 				p.Zero()
 			}
-			input.Set(table[j].input)
-			output.Set(table[j].output)
-			total += tf32.Gradient(cost).X[0]
-			deltas := deltas
-			if context {
-				switch optimizer {
-				case OptimizerMomentum:
-					deltas = table[j].deltas
-				case OptimizerAdam:
-					m = table[j].m
-					v = table[j].v
-				}
-			}
-			for k, p := range parameters {
-				for l, d := range p.D {
-					switch optimizer {
-					case OptimizerMomentum:
-						deltas[k][l] = alpha*deltas[k][l] - eta*d
-						p.X[l] += deltas[k][l]
-					case OptimizerAdam:
-						m[k][l] = beta1*m[k][l] + (1-beta1)*d
-						v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
-						t := float32(i + 1)
-						mCorrected := m[k][l] / (1 - pow(beta1, t))
-						vCorrected := v[k][l] / (1 - pow(beta2, t))
-						p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
-					}
-				}
+			total := tf32.Gradient(cost).X[0]
+			optimize(i)
+			costs = append(costs, total)
+			if total < .025 {
+				converged = true
+				break
 			}
 		}
-		costs = append(costs, total)
-		if total < .1 {
-			converged = true
-			break
+	} else {
+		for i := 0; i < 10000; i++ {
+			for i := range table {
+				j := i + rnd.Intn(len(data)-i)
+				table[i], table[j] = table[j], table[i]
+			}
+			total := float32(0.0)
+			for j := range table {
+				for _, p := range parameters {
+					p.Zero()
+				}
+				for _, p := range zero {
+					p.Zero()
+				}
+				input.Set(table[j].input)
+				output.Set(table[j].output)
+				total += tf32.Gradient(cost).X[0]
+				if context {
+					switch optimizer {
+					case OptimizerMomentum:
+						deltas = table[j].deltas
+					case OptimizerAdam:
+						m = table[j].m
+						v = table[j].v
+					}
+				}
+				optimize(i)
+			}
+			costs = append(costs, total)
+			if total < .1 {
+				converged = true
+				break
+			}
 		}
 	}
 
@@ -199,7 +232,7 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, inception,
 // RunXORRepeatedExperiment runs multiple xor experiments
 func RunXORRepeatedExperiment() {
 	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- XORExperiment(seed, 3, 4, OptimizerAdam, inception, false, context)
+		results <- XORExperiment(seed, 3, 16, OptimizerAdam, true, inception, false, context)
 	}
 	normalStats, inceptionStats := Statistics{}, Statistics{}
 	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
@@ -221,8 +254,8 @@ func RunXORRepeatedExperiment() {
 
 // RunXORExperiment runs an xor experiment once
 func RunXORExperiment(seed int64) {
-	normal := XORExperiment(seed, 3, 4, OptimizerAdam, false, false, false)
-	inception := XORExperiment(seed, 3, 4, OptimizerAdam, true, false, false)
+	normal := XORExperiment(seed, 3, 16, OptimizerAdam, true, false, false, false)
+	inception := XORExperiment(seed, 3, 16, OptimizerAdam, true, true, false, false)
 
 	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
 	for i, cost := range normal.Costs {

@@ -61,7 +61,7 @@ func load() {
 }
 
 // IrisExperiment iris neural network experiment
-func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, inception, dct, context bool) Result {
+func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inception, dct, context bool) Result {
 	once.Do(load)
 
 	rnd, costs, converged, misses := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false, 0
@@ -69,7 +69,14 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, inception
 		return (b-a)*rnd.Float32() + a
 	}
 
-	input, output := tf32.NewV(4), tf32.NewV(3)
+	batchSize := 2
+
+	var input, output tf32.V
+	if batch {
+		input, output = tf32.NewV(4, batchSize), tf32.NewV(3, batchSize)
+	} else {
+		input, output = tf32.NewV(4), tf32.NewV(3)
+	}
 	w1, b1, w2, b2 := tf32.NewV(4, width), tf32.NewV(width), tf32.NewV(width, 3), tf32.NewV(3)
 	parameters, zero := []*tf32.V{&w1, &b1, &w2, &b2}, []*tf32.V{}
 	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
@@ -124,7 +131,7 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, inception
 
 	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
 	l2 := tf32.Softmax(tf32.Add(tf32.Mul(m2, l1), m2a))
-	cost := tf32.CrossEntropy(l2, output.Meta())
+	cost := tf32.Avg(tf32.CrossEntropy(l2, output.Meta()))
 
 	type Datum struct {
 		iris         *iris.Iris
@@ -148,91 +155,132 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, inception
 		table[i] = &data[i]
 	}
 
+	rnd = rand.New(rand.NewSource(seed))
 	// momentum parameters
 	alpha, eta := float32(.1), float32(.1)
 	// adam parameters
 	a, beta1, beta2, epsilon := float32(.001), float32(.9), float32(.999), float32(1E-8)
-	for i := 0; i < 10000; i++ {
-		for i := range table {
-			j := i + rnd.Intn(len(data)-i)
-			table[i], table[j] = table[j], table[i]
+	optimize := func(i int) {
+		norm := float32(0)
+		for _, p := range parameters {
+			for _, d := range p.D {
+				norm += d * d
+			}
 		}
-		total := float32(0.0)
-		for j := range table {
-			for _, p := range parameters {
-				p.Zero()
-			}
-			for _, p := range zero {
-				p.Zero()
-			}
-			in := make([]float32, len(table[j].iris.Measures))
-			for i, measure := range table[j].iris.Measures {
-				in[i] = float32(measure)
-			}
-			input.Set(in)
-			out := make([]float32, 3)
-			out[iris.Labels[table[j].iris.Label]] = 1
-			output.Set(out)
-			total += tf32.Gradient(cost).X[0]
-			norm := float32(0)
-			for _, p := range parameters {
-				for _, d := range p.D {
-					norm += d * d
-				}
-			}
-			norm = float32(math.Sqrt(float64(norm)))
-			deltas := deltas
-			if context {
-				switch optimizer {
-				case OptimizerMomentum:
-					deltas = table[j].deltas
-				case OptimizerAdam:
-					m = table[j].m
-					v = table[j].v
-				}
-			}
-			if norm > 1 {
-				scaling := 1 / norm
-				for k, p := range parameters {
-					for l, d := range p.D {
-						d *= scaling
-						switch optimizer {
-						case OptimizerMomentum:
-							deltas[k][l] = alpha*deltas[k][l] - eta*d
-							p.X[l] += deltas[k][l]
-						case OptimizerAdam:
-							m[k][l] = beta1*m[k][l] + (1-beta1)*d
-							v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
-							t := float32(i + 1)
-							mCorrected := m[k][l] / (1 - pow(beta1, t))
-							vCorrected := v[k][l] / (1 - pow(beta2, t))
-							p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
-						}
+		norm = float32(math.Sqrt(float64(norm)))
+		if norm > 1 {
+			scaling := 1 / norm
+			for k, p := range parameters {
+				for l, d := range p.D {
+					d *= scaling
+					switch optimizer {
+					case OptimizerMomentum:
+						deltas[k][l] = alpha*deltas[k][l] - eta*d
+						p.X[l] += deltas[k][l]
+					case OptimizerAdam:
+						m[k][l] = beta1*m[k][l] + (1-beta1)*d
+						v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
+						t := float32(i + 1)
+						mCorrected := m[k][l] / (1 - pow(beta1, t))
+						vCorrected := v[k][l] / (1 - pow(beta2, t))
+						p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
 					}
 				}
-			} else {
-				for k, p := range parameters {
-					for l, d := range p.D {
-						switch optimizer {
-						case OptimizerMomentum:
-							deltas[k][l] = alpha*deltas[k][l] - eta*d
-							p.X[l] += deltas[k][l]
-						case OptimizerAdam:
-							m[k][l] = beta1*m[k][l] + (1-beta1)*d
-							v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
-							t := float32(i + 1)
-							mCorrected := m[k][l] / (1 - pow(beta1, t))
-							vCorrected := v[k][l] / (1 - pow(beta2, t))
-							p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
-						}
+			}
+		} else {
+			for k, p := range parameters {
+				for l, d := range p.D {
+					switch optimizer {
+					case OptimizerMomentum:
+						deltas[k][l] = alpha*deltas[k][l] - eta*d
+						p.X[l] += deltas[k][l]
+					case OptimizerAdam:
+						m[k][l] = beta1*m[k][l] + (1-beta1)*d
+						v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
+						t := float32(i + 1)
+						mCorrected := m[k][l] / (1 - pow(beta1, t))
+						vCorrected := v[k][l] / (1 - pow(beta2, t))
+						p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
 					}
 				}
 			}
 		}
-		costs = append(costs, total)
-		if total < 13 {
-			converged = true
-			break
+	}
+
+	if batch {
+		for i := 0; i < 10000; i++ {
+			for i := range table {
+				j := i + rnd.Intn(len(data)-i)
+				table[i], table[j] = table[j], table[i]
+			}
+			total, length := float32(0.0), len(table)
+			for j := 0; j < length; j += batchSize {
+				for _, p := range parameters {
+					p.Zero()
+				}
+				for _, p := range zero {
+					p.Zero()
+				}
+
+				inputs, outputs := make([]float32, 0, 4*batchSize), make([]float32, 0, 3*batchSize)
+				for k := 0; k < batchSize; k++ {
+					for _, measure := range table[(j+k)%length].iris.Measures {
+						inputs = append(inputs, float32(measure))
+					}
+					out := make([]float32, 3)
+					out[iris.Labels[table[(j+k)%length].iris.Label]] = 1
+					outputs = append(outputs, out...)
+				}
+				input.Set(inputs)
+				output.Set(outputs)
+				total += tf32.Gradient(cost).X[0]
+				optimize(i)
+			}
+			costs = append(costs, total)
+			if total < 13/float32(batchSize) {
+				converged = true
+				break
+			}
+		}
+	} else {
+		for i := 0; i < 10000; i++ {
+			for i := range table {
+				j := i + rnd.Intn(len(data)-i)
+				table[i], table[j] = table[j], table[i]
+			}
+			total := float32(0.0)
+			for j := range table {
+				for _, p := range parameters {
+					p.Zero()
+				}
+				for _, p := range zero {
+					p.Zero()
+				}
+				in := make([]float32, len(table[j].iris.Measures))
+				for k, measure := range table[j].iris.Measures {
+					in[k] = float32(measure)
+				}
+				input.Set(in)
+				out := make([]float32, 3)
+				out[iris.Labels[table[j].iris.Label]] = 1
+				output.Set(out)
+				total += tf32.Gradient(cost).X[0]
+				if context {
+					switch optimizer {
+					case OptimizerMomentum:
+						deltas = table[j].deltas
+					case OptimizerAdam:
+						m = table[j].m
+						v = table[j].v
+					}
+				}
+				optimize(i)
+			}
+			costs = append(costs, total)
+			if total < 13 {
+				converged = true
+				break
+			}
 		}
 	}
 
@@ -270,7 +318,7 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, inception
 // RunIrisRepeatedExperiment runs multiple iris experiments
 func RunIrisRepeatedExperiment() {
 	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- IrisExperiment(seed, 3, 4, OptimizerAdam, inception, false, context)
+		results <- IrisExperiment(seed, 3, 1, OptimizerAdam, true, inception, false, context)
 	}
 	normalStats, inceptionStats := Statistics{}, Statistics{}
 	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
@@ -292,8 +340,8 @@ func RunIrisRepeatedExperiment() {
 
 // RunIrisExperiment runs an iris experiment once
 func RunIrisExperiment(seed int64) {
-	normal := IrisExperiment(seed, 3, 4, OptimizerAdam, false, false, false)
-	inception := IrisExperiment(seed, 3, 4, OptimizerAdam, true, false, false)
+	normal := IrisExperiment(seed, 3, 1, OptimizerAdam, true, false, false, false)
+	inception := IrisExperiment(seed, 3, 1, OptimizerAdam, true, true, false, false)
 
 	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
 	for i, cost := range normal.Costs {
