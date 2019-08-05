@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"image/color"
 	"math"
 
 	"github.com/pointlander/gradient/tf32"
@@ -44,11 +45,42 @@ func (s *Statistics) String() string {
 type Optimizer int
 
 const (
+	// OptimizerStatic is a static learning optimizer
+	OptimizerStatic Optimizer = iota
 	// OptimizerMomentum basic optimizer
-	OptimizerMomentum Optimizer = iota
-	// OptimizerAdam the adam opptimizer
+	OptimizerMomentum
+	// OptimizerAdam the adam optimizer
 	OptimizerAdam
 )
+
+// Optimizers the optimizers
+var Optimizers = [...]Optimizer{
+	OptimizerStatic,
+	OptimizerMomentum,
+	OptimizerAdam,
+}
+
+// Converts the optimzer to a string
+func (o Optimizer) String() string {
+	switch o {
+	case OptimizerStatic:
+		return "static"
+	case OptimizerMomentum:
+		return "momentum"
+	case OptimizerAdam:
+		return "adam"
+	}
+	return "unknown"
+}
+
+var colors = [...]color.RGBA{
+	{R: 0x00, G: 0x3f, B: 0x5c, A: 255},
+	{R: 0x44, G: 0x4e, B: 0x86, A: 255},
+	{R: 0x95, G: 0x51, B: 0x96, A: 255},
+	{R: 0xdd, G: 0x51, B: 0x82, A: 255},
+	{R: 0xff, G: 0x6e, B: 0x54, A: 255},
+	{R: 0xff, G: 0xa6, B: 0x00, A: 255},
+}
 
 func pow(x, y float32) float32 {
 	return float32(math.Pow(float64(x), float64(y)))

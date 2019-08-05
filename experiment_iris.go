@@ -6,7 +6,6 @@ package main
 
 import (
 	"fmt"
-	"image/color"
 	"math"
 	"math/rand"
 	"sync"
@@ -174,6 +173,8 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 				for l, d := range p.D {
 					d *= scaling
 					switch optimizer {
+					case OptimizerStatic:
+						p.X[l] -= eta * d
 					case OptimizerMomentum:
 						deltas[k][l] = alpha*deltas[k][l] - eta*d
 						p.X[l] += deltas[k][l]
@@ -191,6 +192,8 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 			for k, p := range parameters {
 				for l, d := range p.D {
 					switch optimizer {
+					case OptimizerStatic:
+						p.X[l] -= eta * d
 					case OptimizerMomentum:
 						deltas[k][l] = alpha*deltas[k][l] - eta*d
 						p.X[l] += deltas[k][l]
@@ -342,19 +345,6 @@ func RunIrisRepeatedExperiment() {
 
 // RunIrisExperiment runs an iris experiment once
 func RunIrisExperiment(seed int64) {
-	normal := IrisExperiment(seed, 3, 4, OptimizerAdam, true, false, false, false)
-	inception := IrisExperiment(seed, 3, 4, OptimizerAdam, true, true, false, false)
-
-	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
-	for i, cost := range normal.Costs {
-		pointsNormal = append(pointsNormal, plotter.XY{X: float64(i), Y: float64(cost)})
-	}
-
-	pointsInception := make(plotter.XYs, 0, len(inception.Costs))
-	for i, cost := range inception.Costs {
-		pointsInception = append(pointsInception, plotter.XY{X: float64(i), Y: float64(cost)})
-	}
-
 	p, err := plot.New()
 	if err != nil {
 		panic(err)
@@ -363,27 +353,48 @@ func RunIrisExperiment(seed int64) {
 	p.Title.Text = "iris epochs"
 	p.X.Label.Text = "epoch"
 	p.Y.Label.Text = "cost"
-
-	normalScatter, err := plotter.NewScatter(pointsNormal)
-	if err != nil {
-		panic(err)
-	}
-	normalScatter.GlyphStyle.Radius = vg.Length(1)
-	normalScatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	normalScatter.GlyphStyle.Color = color.RGBA{R: 255, A: 255}
-
-	inceptionScatter, err := plotter.NewScatter(pointsInception)
-	if err != nil {
-		panic(err)
-	}
-	inceptionScatter.GlyphStyle.Radius = vg.Length(1)
-	inceptionScatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	inceptionScatter.GlyphStyle.Color = color.RGBA{B: 255, A: 255}
-
-	p.Add(normalScatter, inceptionScatter)
 	p.Legend.Top = true
-	p.Legend.Add("normal", normalScatter)
-	p.Legend.Add("inception", inceptionScatter)
+
+	index := 0
+	for _, optimizer := range Optimizers {
+		normal := IrisExperiment(seed, 3, 4, optimizer, true, false, false, false)
+		inception := IrisExperiment(seed, 3, 4, optimizer, true, true, false, false)
+
+		pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
+		for i, cost := range normal.Costs {
+			pointsNormal = append(pointsNormal, plotter.XY{X: float64(i), Y: float64(cost)})
+		}
+
+		pointsInception := make(plotter.XYs, 0, len(inception.Costs))
+		for i, cost := range inception.Costs {
+			pointsInception = append(pointsInception, plotter.XY{X: float64(i), Y: float64(cost)})
+		}
+
+		normalScatter, err := plotter.NewScatter(pointsNormal)
+		if err != nil {
+			panic(err)
+		}
+		normalScatter.GlyphStyle.Radius = vg.Length(1)
+		normalScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+		normalScatter.GlyphStyle.Color = colors[index]
+		normalScatter.GlyphStyle.Radius = 2
+		index++
+
+		inceptionScatter, err := plotter.NewScatter(pointsInception)
+		if err != nil {
+			panic(err)
+		}
+		inceptionScatter.GlyphStyle.Radius = vg.Length(1)
+		inceptionScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+		inceptionScatter.GlyphStyle.Color = colors[index]
+		inceptionScatter.GlyphStyle.Radius = 2
+		index++
+
+		p.Add(normalScatter, inceptionScatter)
+
+		p.Legend.Add(fmt.Sprintf("normal %s", optimizer.String()), normalScatter)
+		p.Legend.Add(fmt.Sprintf("inception %s", optimizer.String()), inceptionScatter)
+	}
 
 	err = p.Save(8*vg.Inch, 8*vg.Inch, "cost_iris.png")
 	if err != nil {
