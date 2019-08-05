@@ -6,9 +6,9 @@ package main
 
 import (
 	"fmt"
-	"image/color"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 
 	"gonum.org/v1/plot"
@@ -61,7 +61,7 @@ func load() {
 }
 
 // IrisExperiment iris neural network experiment
-func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, context bool) Result {
+func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inception, dct, context bool) Result {
 	once.Do(load)
 
 	rnd, costs, converged, misses := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false, 0
@@ -69,12 +69,52 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 		return (b-a)*rnd.Float32() + a
 	}
 
-	input, output := tf32.NewV(4), tf32.NewV(3)
-	w1, w1a, w1b := tf32.NewV(4, width), tf32.NewV(4, 4), tf32.NewV(4, width)
-	b1, b1a, b1b := tf32.NewV(width), tf32.NewV(width, width), tf32.NewV(width)
-	w2, w2a, w2b := tf32.NewV(width, 3), tf32.NewV(width, width), tf32.NewV(width, 3)
-	b2, b2a, b2b := tf32.NewV(3), tf32.NewV(3, 3), tf32.NewV(3)
-	parameters := []*tf32.V{&w1, &w1a, &w1b, &b1, &b1a, &b1b, &w2, &w2a, &w2b, &b2, &b2a, &b2b}
+	batchSize := 10
+
+	var input, output tf32.V
+	if batch {
+		input, output = tf32.NewV(4, batchSize), tf32.NewV(3, batchSize)
+	} else {
+		input, output = tf32.NewV(4), tf32.NewV(3)
+	}
+	w1, b1, w2, b2 := tf32.NewV(4, width), tf32.NewV(width), tf32.NewV(width, 3), tf32.NewV(3)
+	parameters, zero := []*tf32.V{&w1, &b1, &w2, &b2}, []*tf32.V{}
+	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
+	if dct {
+		t1, tt1 := DCT2(4)
+		t2, tt2 := DCT2(width)
+		t3, tt3 := DCT2(width)
+		t4, tt4 := DCT2(3)
+		w1b, b1b, w2b, b2b := tf32.NewV(4, width), tf32.NewV(width), tf32.NewV(width, 3), tf32.NewV(3)
+		m1 = tf32.Add(tf32.Mul(tt1.Meta(), tf32.T(tf32.Mul(m1, t1.Meta()))), w1b.Meta())
+		m1a = tf32.Add(tf32.Mul(tt2.Meta(), tf32.T(tf32.Mul(m1a, t2.Meta()))), b1b.Meta())
+		m2 = tf32.Add(tf32.Mul(tt3.Meta(), tf32.T(tf32.Mul(m2, t3.Meta()))), w2b.Meta())
+		m2a = tf32.Add(tf32.Mul(tt4.Meta(), tf32.T(tf32.Mul(m2a, t4.Meta()))), b2b.Meta())
+		zero = append(zero, &t1, &tt1, &t2, &tt2, &t3, &tt3, &t4, &tt4)
+		parameters = append(parameters, &w1b, &b1b, &w2b, &b2b)
+	} else if inception {
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(4, 4), tf32.NewV(4, width)
+			m1 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(width, width), tf32.NewV(width)
+			m1a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1a)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(width, width), tf32.NewV(width, 3)
+			m2 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2)
+			parameters = append(parameters, &a, &b)
+		}
+		for i := 0; i < depth; i++ {
+			a, b := tf32.NewV(3, 3), tf32.NewV(3)
+			m2a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2a)
+			parameters = append(parameters, &a, &b)
+		}
+	}
+
 	var deltas, m, v [][]float32
 	for _, p := range parameters {
 		for i := 0; i < cap(p.X); i++ {
@@ -88,16 +128,10 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 			v = append(v, make([]float32, len(p.X)))
 		}
 	}
-	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
-	if inception {
-		m1 = tf32.Add(tf32.Mul(w1a.Meta(), m1), w1b.Meta())
-		m1a = tf32.Add(tf32.Mul(b1a.Meta(), m1a), b1b.Meta())
-		m2 = tf32.Add(tf32.Mul(w2a.Meta(), m2), w2b.Meta())
-		m2a = tf32.Add(tf32.Mul(b2a.Meta(), m2a), b2b.Meta())
-	}
+
 	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
 	l2 := tf32.Softmax(tf32.Add(tf32.Mul(m2, l1), m2a))
-	cost := tf32.CrossEntropy(l2, output.Meta())
+	cost := tf32.Avg(tf32.CrossEntropy(l2, output.Meta()))
 
 	type Datum struct {
 		iris         *iris.Iris
@@ -121,88 +155,138 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 		table[i] = &data[i]
 	}
 
+	rnd = rand.New(rand.NewSource(seed))
 	// momentum parameters
 	alpha, eta := float32(.1), float32(.1)
 	// adam parameters
 	a, beta1, beta2, epsilon := float32(.001), float32(.9), float32(.999), float32(1E-8)
-	for i := 0; i < 10000; i++ {
-		for i := range table {
-			j := i + rnd.Intn(len(data)-i)
-			table[i], table[j] = table[j], table[i]
+	optimize := func(i int) {
+		norm := float32(0)
+		for _, p := range parameters {
+			for _, d := range p.D {
+				norm += d * d
+			}
 		}
-		total := float32(0.0)
-		for j := range table {
-			for _, p := range parameters {
-				p.Zero()
-			}
-			in := make([]float32, len(table[j].iris.Measures))
-			for i, measure := range table[j].iris.Measures {
-				in[i] = float32(measure)
-			}
-			input.Set(in)
-			out := make([]float32, 3)
-			out[iris.Labels[table[j].iris.Label]] = 1
-			output.Set(out)
-			total += tf32.Gradient(cost).X[0]
-			norm := float32(0)
-			for _, p := range parameters {
-				for _, d := range p.D {
-					norm += d * d
-				}
-			}
-			norm = float32(math.Sqrt(float64(norm)))
-			deltas := deltas
-			if context {
-				switch optimizer {
-				case OptimizerMomentum:
-					deltas = table[j].deltas
-				case OptimizerAdam:
-					m = table[j].m
-					v = table[j].v
-				}
-			}
-			if norm > 1 {
-				scaling := 1 / norm
-				for k, p := range parameters {
-					for l, d := range p.D {
-						d *= scaling
-						switch optimizer {
-						case OptimizerMomentum:
-							deltas[k][l] = alpha*deltas[k][l] - eta*d
-							p.X[l] += deltas[k][l]
-						case OptimizerAdam:
-							m[k][l] = beta1*m[k][l] + (1-beta1)*d
-							v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
-							t := float32(i + 1)
-							mCorrected := m[k][l] / (1 - pow(beta1, t))
-							vCorrected := v[k][l] / (1 - pow(beta2, t))
-							p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
-						}
+		norm = float32(math.Sqrt(float64(norm)))
+		if norm > 1 {
+			scaling := 1 / norm
+			for k, p := range parameters {
+				for l, d := range p.D {
+					d *= scaling
+					switch optimizer {
+					case OptimizerStatic:
+						p.X[l] -= eta * d
+					case OptimizerMomentum:
+						deltas[k][l] = alpha*deltas[k][l] - eta*d
+						p.X[l] += deltas[k][l]
+					case OptimizerAdam:
+						m[k][l] = beta1*m[k][l] + (1-beta1)*d
+						v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
+						t := float32(i + 1)
+						mCorrected := m[k][l] / (1 - pow(beta1, t))
+						vCorrected := v[k][l] / (1 - pow(beta2, t))
+						p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
 					}
 				}
-			} else {
-				for k, p := range parameters {
-					for l, d := range p.D {
-						switch optimizer {
-						case OptimizerMomentum:
-							deltas[k][l] = alpha*deltas[k][l] - eta*d
-							p.X[l] += deltas[k][l]
-						case OptimizerAdam:
-							m[k][l] = beta1*m[k][l] + (1-beta1)*d
-							v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
-							t := float32(i + 1)
-							mCorrected := m[k][l] / (1 - pow(beta1, t))
-							vCorrected := v[k][l] / (1 - pow(beta2, t))
-							p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
-						}
+			}
+		} else {
+			for k, p := range parameters {
+				for l, d := range p.D {
+					switch optimizer {
+					case OptimizerStatic:
+						p.X[l] -= eta * d
+					case OptimizerMomentum:
+						deltas[k][l] = alpha*deltas[k][l] - eta*d
+						p.X[l] += deltas[k][l]
+					case OptimizerAdam:
+						m[k][l] = beta1*m[k][l] + (1-beta1)*d
+						v[k][l] = beta2*v[k][l] + (1-beta2)*d*d
+						t := float32(i + 1)
+						mCorrected := m[k][l] / (1 - pow(beta1, t))
+						vCorrected := v[k][l] / (1 - pow(beta2, t))
+						p.X[l] -= a * mCorrected / (sqrt(vCorrected) + epsilon)
 					}
 				}
 			}
 		}
-		costs = append(costs, total)
-		if total < 13 {
-			converged = true
-			break
+	}
+
+	length := len(table)
+	if batch {
+		for i := 0; i < 10000; i++ {
+			for i := range table {
+				j := i + rnd.Intn(length-i)
+				table[i], table[j] = table[j], table[i]
+			}
+			total := float32(0.0)
+			for j := 0; j < length; j += batchSize {
+				for _, p := range parameters {
+					p.Zero()
+				}
+				for _, p := range zero {
+					p.Zero()
+				}
+
+				inputs, outputs := make([]float32, 0, 4*batchSize), make([]float32, 0, 3*batchSize)
+				for k := 0; k < batchSize; k++ {
+					index := (j + k) % length
+					for _, measure := range table[index].iris.Measures {
+						inputs = append(inputs, float32(measure))
+					}
+					out := make([]float32, 3)
+					out[iris.Labels[table[index].iris.Label]] = 1
+					outputs = append(outputs, out...)
+				}
+				input.Set(inputs)
+				output.Set(outputs)
+				total += tf32.Gradient(cost).X[0]
+				optimize(i)
+			}
+			costs = append(costs, total)
+			if total < 13/float32(batchSize) {
+				converged = true
+				break
+			}
+		}
+	} else {
+		for i := 0; i < 10000; i++ {
+			for i := range table {
+				j := i + rnd.Intn(length-i)
+				table[i], table[j] = table[j], table[i]
+			}
+			total := float32(0.0)
+			for j := range table {
+				for _, p := range parameters {
+					p.Zero()
+				}
+				for _, p := range zero {
+					p.Zero()
+				}
+				in := make([]float32, len(table[j].iris.Measures))
+				for k, measure := range table[j].iris.Measures {
+					in[k] = float32(measure)
+				}
+				input.Set(in)
+				out := make([]float32, 3)
+				out[iris.Labels[table[j].iris.Label]] = 1
+				output.Set(out)
+				total += tf32.Gradient(cost).X[0]
+				if context {
+					switch optimizer {
+					case OptimizerMomentum:
+						deltas = table[j].deltas
+					case OptimizerAdam:
+						m = table[j].m
+						v = table[j].v
+					}
+				}
+				optimize(i)
+			}
+			costs = append(costs, total)
+			if total < 13 {
+				converged = true
+				break
+			}
 		}
 	}
 
@@ -239,42 +323,50 @@ func IrisExperiment(seed int64, width int, optimizer Optimizer, inception, conte
 
 // RunIrisRepeatedExperiment runs multiple iris experiments
 func RunIrisRepeatedExperiment() {
-	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- IrisExperiment(seed, 3, OptimizerAdam, inception, context)
-	}
-	normalStats, inceptionStats := Statistics{}, Statistics{}
-	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
-	for i := 1; i <= 256; i++ {
-		go experiment(int64(i), false, false, normalResults)
-		go experiment(int64(i), true, false, inceptionResults)
-	}
-	for normalStats.Count < 256 || inceptionStats.Count < 256 {
-		select {
-		case result := <-normalResults:
-			normalStats.Aggregate(result)
-		case result := <-inceptionResults:
-			inceptionStats.Aggregate(result)
+	run := func(optimizer Optimizer) (normalStats, inceptionStats Statistics) {
+		normalStats.Mode, inceptionStats.Mode = "normal", "inception"
+		normalStats.Optimizer, inceptionStats.Optimizer = optimizer, optimizer
+		experiment := func(seed int64, inception, context bool, results chan<- Result) {
+			results <- IrisExperiment(seed, 3, 4, optimizer, true, inception, false, context)
 		}
+		normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
+		for i := 1; i <= 256; i++ {
+			go experiment(int64(i), false, false, normalResults)
+			go experiment(int64(i), true, false, inceptionResults)
+		}
+		for normalStats.Count < 256 || inceptionStats.Count < 256 {
+			select {
+			case result := <-normalResults:
+				normalStats.Aggregate(result)
+			case result := <-inceptionResults:
+				inceptionStats.Aggregate(result)
+			}
+		}
+		return
 	}
-	fmt.Printf("normal: %s\n", normalStats.String())
-	fmt.Printf("inception: %s\n", inceptionStats.String())
+
+	statistics := []Statistics{}
+	for _, optimizer := range Optimizers {
+		normalStats, inceptionStats := run(optimizer)
+		statistics = append(statistics, normalStats, inceptionStats)
+	}
+	sort.Slice(statistics, func(i, j int) bool {
+		return statistics[i].AverageEpochs() < statistics[j].AverageEpochs()
+	})
+
+	fmt.Println("| Mode | Optimizer | Converged | Epochs |")
+	fmt.Println("| ---- | --------- | --------- | ------ |")
+	for _, statistic := range statistics {
+		fmt.Printf("| %s | %s | %f | %f |\n",
+			statistic.Mode,
+			statistic.Optimizer.String(),
+			statistic.ConvergenceProbability(),
+			statistic.AverageEpochs())
+	}
 }
 
 // RunIrisExperiment runs an iris experiment once
 func RunIrisExperiment(seed int64) {
-	normal := IrisExperiment(seed, 3, OptimizerAdam, false, false)
-	inception := IrisExperiment(seed, 3, OptimizerAdam, true, false)
-
-	pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
-	for i, cost := range normal.Costs {
-		pointsNormal = append(pointsNormal, plotter.XY{X: float64(i), Y: float64(cost)})
-	}
-
-	pointsInception := make(plotter.XYs, 0, len(inception.Costs))
-	for i, cost := range inception.Costs {
-		pointsInception = append(pointsInception, plotter.XY{X: float64(i), Y: float64(cost)})
-	}
-
 	p, err := plot.New()
 	if err != nil {
 		panic(err)
@@ -283,27 +375,48 @@ func RunIrisExperiment(seed int64) {
 	p.Title.Text = "iris epochs"
 	p.X.Label.Text = "epoch"
 	p.Y.Label.Text = "cost"
-
-	normalScatter, err := plotter.NewScatter(pointsNormal)
-	if err != nil {
-		panic(err)
-	}
-	normalScatter.GlyphStyle.Radius = vg.Length(1)
-	normalScatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	normalScatter.GlyphStyle.Color = color.RGBA{R: 255, A: 255}
-
-	inceptionScatter, err := plotter.NewScatter(pointsInception)
-	if err != nil {
-		panic(err)
-	}
-	inceptionScatter.GlyphStyle.Radius = vg.Length(1)
-	inceptionScatter.GlyphStyle.Shape = draw.CircleGlyph{}
-	inceptionScatter.GlyphStyle.Color = color.RGBA{B: 255, A: 255}
-
-	p.Add(normalScatter, inceptionScatter)
 	p.Legend.Top = true
-	p.Legend.Add("normal", normalScatter)
-	p.Legend.Add("inception", inceptionScatter)
+
+	index := 0
+	for _, optimizer := range Optimizers {
+		normal := IrisExperiment(seed, 3, 4, optimizer, true, false, false, false)
+		inception := IrisExperiment(seed, 3, 4, optimizer, true, true, false, false)
+
+		pointsNormal := make(plotter.XYs, 0, len(normal.Costs))
+		for i, cost := range normal.Costs {
+			pointsNormal = append(pointsNormal, plotter.XY{X: float64(i), Y: float64(cost)})
+		}
+
+		pointsInception := make(plotter.XYs, 0, len(inception.Costs))
+		for i, cost := range inception.Costs {
+			pointsInception = append(pointsInception, plotter.XY{X: float64(i), Y: float64(cost)})
+		}
+
+		normalScatter, err := plotter.NewScatter(pointsNormal)
+		if err != nil {
+			panic(err)
+		}
+		normalScatter.GlyphStyle.Radius = vg.Length(1)
+		normalScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+		normalScatter.GlyphStyle.Color = colors[index]
+		normalScatter.GlyphStyle.Radius = 2
+		index++
+
+		inceptionScatter, err := plotter.NewScatter(pointsInception)
+		if err != nil {
+			panic(err)
+		}
+		inceptionScatter.GlyphStyle.Radius = vg.Length(1)
+		inceptionScatter.GlyphStyle.Shape = draw.CircleGlyph{}
+		inceptionScatter.GlyphStyle.Color = colors[index]
+		inceptionScatter.GlyphStyle.Radius = 2
+		index++
+
+		p.Add(normalScatter, inceptionScatter)
+
+		p.Legend.Add(fmt.Sprintf("normal %s", optimizer.String()), normalScatter)
+		p.Legend.Add(fmt.Sprintf("inception %s", optimizer.String()), inceptionScatter)
+	}
 
 	err = p.Save(8*vg.Inch, 8*vg.Inch, "cost_iris.png")
 	if err != nil {
