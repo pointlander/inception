@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
@@ -168,7 +169,7 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inc
 			total := tf32.Gradient(cost).X[0]
 			optimize(i)
 			costs = append(costs, total)
-			if total < .025 {
+			if total < .01 {
 				converged = true
 				break
 			}
@@ -232,25 +233,46 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inc
 
 // RunXORRepeatedExperiment runs multiple xor experiments
 func RunXORRepeatedExperiment() {
-	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- XORExperiment(seed, 3, 16, OptimizerAdam, true, inception, false, context)
-	}
-	normalStats, inceptionStats := Statistics{}, Statistics{}
-	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
-	for i := 1; i <= 256; i++ {
-		go experiment(int64(i), false, false, normalResults)
-		go experiment(int64(i), true, false, inceptionResults)
-	}
-	for normalStats.Count < 256 || inceptionStats.Count < 256 {
-		select {
-		case result := <-normalResults:
-			normalStats.Aggregate(result)
-		case result := <-inceptionResults:
-			inceptionStats.Aggregate(result)
+	run := func(optimizer Optimizer) (normalStats, inceptionStats Statistics) {
+		normalStats.Mode, inceptionStats.Mode = "normal", "inception"
+		normalStats.Optimizer, inceptionStats.Optimizer = optimizer, optimizer
+		experiment := func(seed int64, inception, context bool, results chan<- Result) {
+			results <- XORExperiment(seed, 3, 16, optimizer, true, inception, false, context)
 		}
+		normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
+		for i := 1; i <= 256; i++ {
+			go experiment(int64(i), false, false, normalResults)
+			go experiment(int64(i), true, false, inceptionResults)
+		}
+		for normalStats.Count < 256 || inceptionStats.Count < 256 {
+			select {
+			case result := <-normalResults:
+				normalStats.Aggregate(result)
+			case result := <-inceptionResults:
+				inceptionStats.Aggregate(result)
+			}
+		}
+		return
 	}
-	fmt.Printf("normal: %s\n", normalStats.String())
-	fmt.Printf("inception: %s\n", inceptionStats.String())
+
+	statistics := []Statistics{}
+	for _, optimizer := range Optimizers {
+		normalStats, inceptionStats := run(optimizer)
+		statistics = append(statistics, normalStats, inceptionStats)
+	}
+	sort.Slice(statistics, func(i, j int) bool {
+		return statistics[i].AverageEpochs() < statistics[j].AverageEpochs()
+	})
+
+	fmt.Println("| Mode | Optimizer | Converged | Epochs |")
+	fmt.Println("| ---- | --------- | --------- | ------ |")
+	for _, statistic := range statistics {
+		fmt.Printf("| %s | %s | %f | %f |\n",
+			statistic.Mode,
+			statistic.Optimizer.String(),
+			statistic.ConvergenceProbability(),
+			statistic.AverageEpochs())
+	}
 }
 
 // RunXORExperiment runs an xor experiment once

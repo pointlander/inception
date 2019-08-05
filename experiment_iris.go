@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 
 	"gonum.org/v1/plot"
@@ -322,25 +323,46 @@ func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, in
 
 // RunIrisRepeatedExperiment runs multiple iris experiments
 func RunIrisRepeatedExperiment() {
-	experiment := func(seed int64, inception, context bool, results chan<- Result) {
-		results <- IrisExperiment(seed, 3, 4, OptimizerAdam, true, inception, false, context)
-	}
-	normalStats, inceptionStats := Statistics{}, Statistics{}
-	normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
-	for i := 1; i <= 256; i++ {
-		go experiment(int64(i), false, false, normalResults)
-		go experiment(int64(i), true, false, inceptionResults)
-	}
-	for normalStats.Count < 256 || inceptionStats.Count < 256 {
-		select {
-		case result := <-normalResults:
-			normalStats.Aggregate(result)
-		case result := <-inceptionResults:
-			inceptionStats.Aggregate(result)
+	run := func(optimizer Optimizer) (normalStats, inceptionStats Statistics) {
+		normalStats.Mode, inceptionStats.Mode = "normal", "inception"
+		normalStats.Optimizer, inceptionStats.Optimizer = optimizer, optimizer
+		experiment := func(seed int64, inception, context bool, results chan<- Result) {
+			results <- IrisExperiment(seed, 3, 4, optimizer, true, inception, false, context)
 		}
+		normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
+		for i := 1; i <= 256; i++ {
+			go experiment(int64(i), false, false, normalResults)
+			go experiment(int64(i), true, false, inceptionResults)
+		}
+		for normalStats.Count < 256 || inceptionStats.Count < 256 {
+			select {
+			case result := <-normalResults:
+				normalStats.Aggregate(result)
+			case result := <-inceptionResults:
+				inceptionStats.Aggregate(result)
+			}
+		}
+		return
 	}
-	fmt.Printf("normal: %s\n", normalStats.String())
-	fmt.Printf("inception: %s\n", inceptionStats.String())
+
+	statistics := []Statistics{}
+	for _, optimizer := range Optimizers {
+		normalStats, inceptionStats := run(optimizer)
+		statistics = append(statistics, normalStats, inceptionStats)
+	}
+	sort.Slice(statistics, func(i, j int) bool {
+		return statistics[i].AverageEpochs() < statistics[j].AverageEpochs()
+	})
+
+	fmt.Println("| Mode | Optimizer | Converged | Epochs |")
+	fmt.Println("| ---- | --------- | --------- | ------ |")
+	for _, statistic := range statistics {
+		fmt.Printf("| %s | %s | %f | %f |\n",
+			statistic.Mode,
+			statistic.Optimizer.String(),
+			statistic.ConvergenceProbability(),
+			statistic.AverageEpochs())
+	}
 }
 
 // RunIrisExperiment runs an iris experiment once

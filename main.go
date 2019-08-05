@@ -22,6 +22,8 @@ type Result struct {
 
 // Statistics aggregation of results
 type Statistics struct {
+	Mode      string
+	Optimizer Optimizer
 	Count     int
 	Converged int
 	Epochs    int
@@ -36,9 +38,19 @@ func (s *Statistics) Aggregate(result Result) {
 	}
 }
 
+// ConvergenceProbability the probability of convergence
+func (s *Statistics) ConvergenceProbability() float64 {
+	return float64(s.Converged) / float64(s.Count)
+}
+
+// AverageEpochs the average epochs
+func (s *Statistics) AverageEpochs() float64 {
+	return float64(s.Epochs) / float64(s.Converged)
+}
+
 // String generates a string for the statistics
 func (s *Statistics) String() string {
-	return fmt.Sprintf("%f %f", float64(s.Converged)/float64(s.Count), float64(s.Epochs)/float64(s.Converged))
+	return fmt.Sprintf("%f %f", s.ConvergenceProbability(), s.AverageEpochs())
 }
 
 // Optimizer an optimizer type
