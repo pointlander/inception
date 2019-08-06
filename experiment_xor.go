@@ -175,6 +175,7 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inc
 			}
 		}
 	} else {
+	Learn:
 		for i := 0; i < 10000; i++ {
 			for i := range table {
 				j := i + rnd.Intn(len(data)-i)
@@ -203,9 +204,17 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inc
 				optimize(i)
 			}
 			costs = append(costs, total)
-			if total < .1 {
-				converged = true
-				break
+			switch optimizer {
+			case OptimizerStatic, OptimizerMomentum:
+				if total < .01 {
+					converged = true
+					break Learn
+				}
+			case OptimizerAdam:
+				if total < .1 {
+					converged = true
+					break Learn
+				}
 			}
 		}
 	}
@@ -218,9 +227,11 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inc
 				output = *a
 			})
 			if data[i].output[0] == 1 && output.X[0] < .5 {
-				panic(fmt.Sprintf("%v output should be 1 %f %v %v", context, output.X[0], data[i].input, data[i].output))
+				panic(fmt.Sprintf("%v output should be 1 %f %v %v %s %v", context, output.X[0], data[i].input, data[i].output,
+					optimizer.String(), batch))
 			} else if data[i].output[0] == 0 && output.X[0] >= .5 {
-				panic(fmt.Sprintf("%v output should be 0 %f %v %v", context, output.X[0], data[i].input, data[i].output))
+				panic(fmt.Sprintf("%v output should be 0 %f %v %v %s %v", context, output.X[0], data[i].input, data[i].output,
+					optimizer.String(), batch))
 			}
 		}
 	}
@@ -233,11 +244,16 @@ func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inc
 
 // RunXORRepeatedExperiment runs multiple xor experiments
 func RunXORRepeatedExperiment() {
-	run := func(optimizer Optimizer) (normalStats, inceptionStats Statistics) {
+	run := func(optimizer Optimizer, batch bool) (normalStats, inceptionStats Statistics) {
 		normalStats.Mode, inceptionStats.Mode = "normal", "inception"
 		normalStats.Optimizer, inceptionStats.Optimizer = optimizer, optimizer
+		if batch {
+			normalStats.Batch, inceptionStats.Batch = 4, 4
+		} else {
+			normalStats.Batch, inceptionStats.Batch = 1, 1
+		}
 		experiment := func(seed int64, inception, context bool, results chan<- Result) {
-			results <- XORExperiment(seed, 3, 16, optimizer, true, inception, false, context)
+			results <- XORExperiment(seed, 3, 16, optimizer, batch, inception, false, context)
 		}
 		normalResults, inceptionResults := make(chan Result, 8), make(chan Result, 8)
 		for i := 1; i <= 256; i++ {
@@ -257,21 +273,79 @@ func RunXORRepeatedExperiment() {
 
 	statistics := []Statistics{}
 	for _, optimizer := range Optimizers {
-		normalStats, inceptionStats := run(optimizer)
+		normalStats, inceptionStats := run(optimizer, false)
+		statistics = append(statistics, normalStats, inceptionStats)
+
+		normalStats, inceptionStats = run(optimizer, true)
 		statistics = append(statistics, normalStats, inceptionStats)
 	}
 	sort.Slice(statistics, func(i, j int) bool {
 		return statistics[i].AverageEpochs() < statistics[j].AverageEpochs()
 	})
 
-	fmt.Println("| Mode | Optimizer | Converged | Epochs |")
-	fmt.Println("| ---- | --------- | --------- | ------ |")
-	for _, statistic := range statistics {
-		fmt.Printf("| %s | %s | %f | %f |\n",
-			statistic.Mode,
-			statistic.Optimizer.String(),
-			statistic.ConvergenceProbability(),
-			statistic.AverageEpochs())
+	headers := []string{"Mode", "Optimizer", "Batch", "Converged", "Epochs"}
+	sizes, results := make([]int, 5), make([][5]string, len(statistics))
+	for i, header := range headers {
+		sizes[i] = len(header)
+	}
+	for i, statistic := range statistics {
+		results[i][0] = statistic.Mode
+		if length := len(results[i][0]); length > sizes[0] {
+			sizes[0] = length
+		}
+		results[i][1] = statistic.Optimizer.String()
+		if length := len(results[i][1]); length > sizes[1] {
+			sizes[1] = length
+		}
+		results[i][2] = fmt.Sprintf("%d", statistic.Batch)
+		if length := len(results[i][2]); length > sizes[2] {
+			sizes[2] = length
+		}
+		results[i][3] = fmt.Sprintf("%f", statistic.ConvergenceProbability())
+		if length := len(results[i][3]); length > sizes[3] {
+			sizes[3] = length
+		}
+		results[i][4] = fmt.Sprintf("%f", statistic.AverageEpochs())
+		if length := len(results[i][4]); length > sizes[4] {
+			sizes[4] = length
+		}
+	}
+
+	fmt.Printf("| ")
+	for i, header := range headers {
+		fmt.Printf("%s", header)
+		spaces := sizes[i] - len(header)
+		for spaces > 0 {
+			fmt.Printf(" ")
+			spaces--
+		}
+		fmt.Printf(" | ")
+	}
+	fmt.Printf("\n| ")
+	for i, header := range headers {
+		dashes := len(header)
+		if sizes[i] > dashes {
+			dashes = sizes[i]
+		}
+		for dashes > 0 {
+			fmt.Printf("-")
+			dashes--
+		}
+		fmt.Printf(" | ")
+	}
+	fmt.Printf("\n")
+	for _, row := range results {
+		fmt.Printf("| ")
+		for i, entry := range row {
+			spaces := sizes[i] - len(entry)
+			fmt.Printf("%s", entry)
+			for spaces > 0 {
+				fmt.Printf(" ")
+				spaces--
+			}
+			fmt.Printf(" | ")
+		}
+		fmt.Printf("\n")
 	}
 }
 

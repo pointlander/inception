@@ -24,6 +24,7 @@ type Result struct {
 type Statistics struct {
 	Mode      string
 	Optimizer Optimizer
+	Batch     int
 	Count     int
 	Converged int
 	Epochs    int
