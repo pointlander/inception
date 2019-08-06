@@ -38,8 +38,8 @@ This idea has been tested on two problems: xor function and the iris dataset. In
 
 Below are example traces of the cost vs epochs for xor and iris:
 
-### XOR epochs
+### XOR epochs - batch size 4
 ![epochs of xor](cost_xor.png?raw=true)
 
-### Iris epochs
+### Iris epochs - batch size 10
 ![epochs of iris](cost_iris.png?raw=true)
