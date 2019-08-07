@@ -17,6 +17,147 @@ import (
 	"github.com/pointlander/gradient/tf32"
 )
 
+// XORNetwork is an xor neural network
+type XORNetwork struct {
+	Rnd           *rand.Rand
+	Input, Output *tf32.V
+	Parameters    []*tf32.V
+	Genome        [][]*tf32.V
+	Cost          tf32.Meta
+	Fitness       float32
+}
+
+// NewXORNetwork creates a new xor network
+func NewXORNetwork(seed int64, width, depth int) XORNetwork {
+	rnd := rand.New(rand.NewSource(seed))
+	random32 := func(a, b float32) float32 {
+		return (b-a)*rnd.Float32() + a
+	}
+
+	input, output := tf32.NewV(2, 4), tf32.NewV(1, 4)
+	w1, b1, w2, b2 := tf32.NewV(2, width), tf32.NewV(width), tf32.NewV(width), tf32.NewV(1)
+	parameters := []*tf32.V{&w1, &b1, &w2, &b2}
+	genome := make([][]*tf32.V, 4)
+
+	input.X = append(input.X, 0, 0, 1, 0, 0, 1, 1, 1)
+	output.X = append(output.X, 0, 1, 1, 0)
+
+	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(2, 2), tf32.NewV(2, width)
+		m1 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1)
+		parameters = append(parameters, &a, &b)
+		genome[0] = append(genome[0], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(width, width), tf32.NewV(width)
+		m1a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1a)
+		parameters = append(parameters, &a, &b)
+		genome[1] = append(genome[1], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(width, width), tf32.NewV(width)
+		m2 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2)
+		parameters = append(parameters, &a, &b)
+		genome[2] = append(genome[2], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(1), tf32.NewV(1)
+		m2a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2a)
+		parameters = append(parameters, &a, &b)
+		genome[3] = append(genome[3], &a, &b)
+	}
+
+	for _, p := range parameters {
+		for i := 0; i < cap(p.X); i++ {
+			p.X = append(p.X, random32(-1, 1))
+		}
+	}
+
+	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
+	l2 := tf32.Sigmoid(tf32.Add(tf32.Mul(m2, l1), m2a))
+	cost := tf32.Avg(tf32.Quadratic(l2, output.Meta()))
+
+	return XORNetwork{
+		Rnd:        rand.New(rand.NewSource(seed)),
+		Input:      &input,
+		Output:     &output,
+		Parameters: parameters,
+		Genome:     genome,
+		Cost:       cost,
+	}
+}
+
+// Train trains the network
+func (n *XORNetwork) Train() float32 {
+	for _, p := range n.Parameters {
+		p.Zero()
+	}
+	cost := tf32.Gradient(n.Cost).X[0]
+	eta := float32(.6)
+	for _, p := range n.Parameters {
+		for l, d := range p.D {
+			p.X[l] -= eta * d
+		}
+	}
+	return cost
+}
+
+// XORParallelExperiment runs parallel version of experiment
+func XORParallelExperiment(seed int64, depth int) {
+	rnd := rand.New(rand.NewSource(seed))
+	networks := make([]XORNetwork, 100)
+	for i := range networks {
+		networks[i] = NewXORNetwork(int64(i)+seed, 3, depth)
+	}
+	done := make(chan float32, 8)
+	train := func(n *XORNetwork) {
+		n.Fitness = n.Train()
+		done <- n.Fitness
+	}
+	for i := 0; i < 100; i++ {
+		for j := range networks {
+			go train(&networks[j])
+		}
+		for j := 0; j < 100; j++ {
+			<-done
+		}
+		sort.Slice(networks, func(i, j int) bool {
+			return networks[i].Fitness < networks[j].Fitness
+		})
+		fmt.Println(i, networks[0].Fitness)
+		if networks[0].Fitness < .01 {
+			break
+		}
+
+		index := 0
+		for j := 0; j < 25; j++ {
+			a, b, c := rnd.Intn(50), rnd.Intn(50), rnd.Intn(4)
+			for a == b {
+				b = rnd.Intn(50)
+			}
+			x, y := rnd.Intn(depth), rnd.Intn(depth)
+
+			aa := 50 + index
+			index++
+			for k, p := range networks[aa].Parameters {
+				copy(p.X, networks[a].Parameters[k].X)
+			}
+
+			bb := 50 + index
+			index++
+			for k, p := range networks[bb].Parameters {
+				copy(p.X, networks[b].Parameters[k].X)
+			}
+
+			networks[aa].Genome[c][x*2].X, networks[bb].Genome[c][y*2].X =
+				networks[bb].Genome[c][y*2].X, networks[aa].Genome[c][x*2].X
+			networks[aa].Genome[c][x*2+1].X, networks[bb].Genome[c][y*2+1].X =
+				networks[bb].Genome[c][y*2+1].X, networks[aa].Genome[c][x*2+1].X
+		}
+	}
+}
+
 // XORExperiment xor neural network experiment
 func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inception, dct, context bool) Result {
 	rnd, costs, converged := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false
