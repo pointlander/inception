@@ -19,7 +19,6 @@ import (
 
 // XORNetwork is an xor neural network
 type XORNetwork struct {
-	Rnd           *rand.Rand
 	Input, Output *tf32.V
 	Parameters    []*tf32.V
 	Genome        [][]*tf32.V
@@ -28,9 +27,11 @@ type XORNetwork struct {
 }
 
 // NewXORNetwork creates a new xor network
-func NewXORNetwork(seed int64, width, depth int) XORNetwork {
-	rnd := rand.New(rand.NewSource(seed))
+func NewXORNetwork(rnd *rand.Rand, width, depth int) XORNetwork {
 	random32 := func(a, b float32) float32 {
+		if rnd == nil {
+			return 0
+		}
 		return (b-a)*rnd.Float32() + a
 	}
 
@@ -79,7 +80,6 @@ func NewXORNetwork(seed int64, width, depth int) XORNetwork {
 	cost := tf32.Avg(tf32.Quadratic(l2, output.Meta()))
 
 	return XORNetwork{
-		Rnd:        rand.New(rand.NewSource(seed)),
 		Input:      &input,
 		Output:     &output,
 		Parameters: parameters,
@@ -88,8 +88,15 @@ func NewXORNetwork(seed int64, width, depth int) XORNetwork {
 	}
 }
 
-// Train trains the network
-func (n *XORNetwork) Train() float32 {
+// Fit get the fitness of the network
+func (n *XORNetwork) Fit() float32 {
+	fitness := tf32.Gradient(n.Cost).X[0]
+	n.Fitness = fitness
+	return fitness
+}
+
+// Mutate mutates the network with gradient descent
+func (n *XORNetwork) Mutate() float32 {
 	for _, p := range n.Parameters {
 		p.Zero()
 	}
@@ -100,62 +107,87 @@ func (n *XORNetwork) Train() float32 {
 			p.X[l] -= eta * d
 		}
 	}
+	n.Fitness = cost
 	return cost
 }
 
 // XORParallelExperiment runs parallel version of experiment
-func XORParallelExperiment(seed int64, depth int) {
+func XORParallelExperiment(seed int64, depth int) (generatrions int) {
 	rnd := rand.New(rand.NewSource(seed))
 	networks := make([]XORNetwork, 100)
 	for i := range networks {
-		networks[i] = NewXORNetwork(int64(i)+seed, 3, depth)
+		networks[i] = NewXORNetwork(rnd, 3, depth)
 	}
 	done := make(chan float32, 8)
-	train := func(n *XORNetwork) {
-		n.Fitness = n.Train()
-		done <- n.Fitness
+	fit := func(n *XORNetwork) {
+		done <- n.Fit()
 	}
-	for i := 0; i < 100; i++ {
+	mutate := func(n *XORNetwork) {
+		done <- n.Mutate()
+	}
+
+	generatrions, rnd = 1000, rand.New(rand.NewSource(seed))
+	for i := 0; i < 1000; i++ {
 		for j := range networks {
-			go train(&networks[j])
+			go mutate(&networks[j])
 		}
 		for j := 0; j < 100; j++ {
 			<-done
 		}
+
+		tf32.Static.InferenceOnly = true
+		for j := range networks {
+			go fit(&networks[j])
+		}
+		for j := 0; j < 100; j++ {
+			<-done
+		}
+		tf32.Static.InferenceOnly = false
 		sort.Slice(networks, func(i, j int) bool {
 			return networks[i].Fitness < networks[j].Fitness
 		})
-		fmt.Println(i, networks[0].Fitness)
+		//fmt.Println(i, networks[0].Fitness)
 		if networks[0].Fitness < .01 {
+			generatrions = i
 			break
 		}
 
-		index := 0
+		index := 50
 		for j := 0; j < 25; j++ {
-			a, b, c := rnd.Intn(50), rnd.Intn(50), rnd.Intn(4)
+			a, b := rnd.Intn(50), rnd.Intn(50)
 			for a == b {
 				b = rnd.Intn(50)
 			}
-			x, y := rnd.Intn(depth), rnd.Intn(depth)
 
-			aa := 50 + index
-			index++
-			for k, p := range networks[aa].Parameters {
+			childa := &networks[index]
+			for k, p := range childa.Parameters {
 				copy(p.X, networks[a].Parameters[k].X)
 			}
-
-			bb := 50 + index
 			index++
-			for k, p := range networks[bb].Parameters {
+
+			childb := &networks[index]
+			for k, p := range childb.Parameters {
 				copy(p.X, networks[b].Parameters[k].X)
 			}
+			index++
 
-			networks[aa].Genome[c][x*2].X, networks[bb].Genome[c][y*2].X =
-				networks[bb].Genome[c][y*2].X, networks[aa].Genome[c][x*2].X
-			networks[aa].Genome[c][x*2+1].X, networks[bb].Genome[c][y*2+1].X =
-				networks[bb].Genome[c][y*2+1].X, networks[aa].Genome[c][x*2+1].X
+			set, x, y := rnd.Intn(4), rnd.Intn(depth), rnd.Intn(depth)
+			childa.Genome[set][x*2].X, childb.Genome[set][y*2].X =
+				childb.Genome[set][y*2].X, childa.Genome[set][x*2].X
+			childa.Genome[set][x*2+1].X, childb.Genome[set][y*2+1].X =
+				childb.Genome[set][y*2+1].X, childa.Genome[set][x*2+1].X
 		}
 	}
+	return
+}
+
+// RunXORRepeatedParallelExperiment runs xor prarallel experiment repeatedly
+func RunXORRepeatedParallelExperiment() {
+	total := 0
+	for i := 0; i < 256; i++ {
+		total += XORParallelExperiment(int64(i), 16)
+	}
+	fmt.Printf("generations=%f\n", float64(total)/256)
 }
 
 // XORExperiment xor neural network experiment
