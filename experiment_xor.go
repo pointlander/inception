@@ -185,7 +185,7 @@ func XORParallelExperiment(seed int64, depth int) (generatrions int) {
 func RunXORRepeatedParallelExperiment() {
 	total := 0
 	for i := 0; i < 256; i++ {
-		total += XORParallelExperiment(int64(i), 16)
+		total += XORParallelExperiment(int64(i)+1, 16)
 	}
 	fmt.Printf("generations=%f\n", float64(total)/256)
 }

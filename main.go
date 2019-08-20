@@ -159,8 +159,12 @@ func main() {
 		}
 		return
 	} else if *irisExperiment {
-		if *repeated {
+		if *repeated && *parallel {
+			RunIrisRepeatedParallelExperiment()
+		} else if *repeated {
 			RunIrisRepeatedExperiment()
+		} else if *parallel {
+			IrisParallelExperiment(*seed, 4)
 		} else {
 			RunIrisExperiment(*seed)
 		}
