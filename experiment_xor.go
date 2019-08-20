@@ -17,6 +17,179 @@ import (
 	"github.com/pointlander/gradient/tf32"
 )
 
+// XORNetwork is an xor neural network
+type XORNetwork struct {
+	Input, Output *tf32.V
+	Parameters    []*tf32.V
+	Genome        [][]*tf32.V
+	Cost          tf32.Meta
+	Fitness       float32
+}
+
+// NewXORNetwork creates a new xor network
+func NewXORNetwork(rnd *rand.Rand, width, depth int) XORNetwork {
+	random32 := func(a, b float32) float32 {
+		if rnd == nil {
+			return 0
+		}
+		return (b-a)*rnd.Float32() + a
+	}
+
+	input, output := tf32.NewV(2, 4), tf32.NewV(1, 4)
+	w1, b1, w2, b2 := tf32.NewV(2, width), tf32.NewV(width), tf32.NewV(width), tf32.NewV(1)
+	parameters := []*tf32.V{&w1, &b1, &w2, &b2}
+	genome := make([][]*tf32.V, 4)
+
+	input.X = append(input.X, 0, 0, 1, 0, 0, 1, 1, 1)
+	output.X = append(output.X, 0, 1, 1, 0)
+
+	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(2, 2), tf32.NewV(2, width)
+		m1 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1)
+		parameters = append(parameters, &a, &b)
+		genome[0] = append(genome[0], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(width, width), tf32.NewV(width)
+		m1a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1a)
+		parameters = append(parameters, &a, &b)
+		genome[1] = append(genome[1], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(width, width), tf32.NewV(width)
+		m2 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2)
+		parameters = append(parameters, &a, &b)
+		genome[2] = append(genome[2], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(1), tf32.NewV(1)
+		m2a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2a)
+		parameters = append(parameters, &a, &b)
+		genome[3] = append(genome[3], &a, &b)
+	}
+
+	for _, p := range parameters {
+		for i := 0; i < cap(p.X); i++ {
+			p.X = append(p.X, random32(-1, 1))
+		}
+	}
+
+	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
+	l2 := tf32.Sigmoid(tf32.Add(tf32.Mul(m2, l1), m2a))
+	cost := tf32.Avg(tf32.Quadratic(l2, output.Meta()))
+
+	return XORNetwork{
+		Input:      &input,
+		Output:     &output,
+		Parameters: parameters,
+		Genome:     genome,
+		Cost:       cost,
+	}
+}
+
+// Fit get the fitness of the network
+func (n *XORNetwork) Fit() float32 {
+	fitness := tf32.Gradient(n.Cost).X[0]
+	n.Fitness = fitness
+	return fitness
+}
+
+// Mutate mutates the network with gradient descent
+func (n *XORNetwork) Mutate() float32 {
+	for _, p := range n.Parameters {
+		p.Zero()
+	}
+	cost := tf32.Gradient(n.Cost).X[0]
+	eta := float32(.6)
+	for _, p := range n.Parameters {
+		for l, d := range p.D {
+			p.X[l] -= eta * d
+		}
+	}
+	n.Fitness = cost
+	return cost
+}
+
+// XORParallelExperiment runs parallel version of experiment
+func XORParallelExperiment(seed int64, depth int) (generatrions int) {
+	rnd := rand.New(rand.NewSource(seed))
+	networks := make([]XORNetwork, 100)
+	for i := range networks {
+		networks[i] = NewXORNetwork(rnd, 3, depth)
+	}
+	done := make(chan float32, 8)
+	fit := func(n *XORNetwork) {
+		done <- n.Fit()
+	}
+	mutate := func(n *XORNetwork) {
+		done <- n.Mutate()
+	}
+
+	generatrions, rnd = 1000, rand.New(rand.NewSource(seed))
+	for i := 0; i < 1000; i++ {
+		for j := range networks {
+			go mutate(&networks[j])
+		}
+		for j := 0; j < 100; j++ {
+			<-done
+		}
+
+		tf32.Static.InferenceOnly = true
+		for j := range networks {
+			go fit(&networks[j])
+		}
+		for j := 0; j < 100; j++ {
+			<-done
+		}
+		tf32.Static.InferenceOnly = false
+		sort.Slice(networks, func(i, j int) bool {
+			return networks[i].Fitness < networks[j].Fitness
+		})
+		//fmt.Println(i, networks[0].Fitness)
+		if networks[0].Fitness < .01 {
+			generatrions = i
+			break
+		}
+
+		index := 50
+		for j := 0; j < 25; j++ {
+			a, b := rnd.Intn(50), rnd.Intn(50)
+			for a == b {
+				b = rnd.Intn(50)
+			}
+
+			childa := &networks[index]
+			for k, p := range childa.Parameters {
+				copy(p.X, networks[a].Parameters[k].X)
+			}
+			index++
+
+			childb := &networks[index]
+			for k, p := range childb.Parameters {
+				copy(p.X, networks[b].Parameters[k].X)
+			}
+			index++
+
+			set, x, y := rnd.Intn(4), rnd.Intn(depth), rnd.Intn(depth)
+			childa.Genome[set][x*2].X, childb.Genome[set][y*2].X =
+				childb.Genome[set][y*2].X, childa.Genome[set][x*2].X
+			childa.Genome[set][x*2+1].X, childb.Genome[set][y*2+1].X =
+				childb.Genome[set][y*2+1].X, childa.Genome[set][x*2+1].X
+		}
+	}
+	return
+}
+
+// RunXORRepeatedParallelExperiment runs xor prarallel experiment repeatedly
+func RunXORRepeatedParallelExperiment() {
+	total := 0
+	for i := 0; i < 256; i++ {
+		total += XORParallelExperiment(int64(i)+1, 16)
+	}
+	fmt.Printf("generations=%f\n", float64(total)/256)
+}
+
 // XORExperiment xor neural network experiment
 func XORExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inception, dct, context bool) Result {
 	rnd, costs, converged := rand.New(rand.NewSource(seed)), make([]float32, 0, 1000), false

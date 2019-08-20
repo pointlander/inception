@@ -137,33 +137,37 @@ func DCT2(size int) (t, tt tf32.V) {
 }
 
 var (
-	seed                      = flag.Int64("seed", 9, "the seed to use")
-	runXORExperiment          = flag.Bool("xor", false, "run the xor experiment")
-	runXORRepeatedExperiment  = flag.Bool("xorRepeated", false, "run the xor experiment repeatedly")
-	runIrisExperiment         = flag.Bool("iris", false, "run the iris experiment")
-	runIrisRepeatedExperiment = flag.Bool("irisRepeated", false, "run the iris experiment repeatedly")
+	seed           = flag.Int64("seed", 9, "the seed to use")
+	xorExperiment  = flag.Bool("xor", false, "run the xor experiment")
+	irisExperiment = flag.Bool("iris", false, "run the iris experiment")
+	parallel       = flag.Bool("parallel", false, "run the experiment parallelly")
+	repeated       = flag.Bool("repeated", false, "run the experiment repeatedly")
 )
 
 func main() {
 	flag.Parse()
 
-	if *runXORRepeatedExperiment {
-		RunXORRepeatedExperiment()
+	if *xorExperiment {
+		if *repeated && *parallel {
+			RunXORRepeatedParallelExperiment()
+		} else if *repeated {
+			RunXORRepeatedExperiment()
+		} else if *parallel {
+			XORParallelExperiment(*seed, 16)
+		} else {
+			RunXORExperiment(*seed)
+		}
 		return
-	}
-
-	if *runXORExperiment {
-		RunXORExperiment(*seed)
-		return
-	}
-
-	if *runIrisRepeatedExperiment {
-		RunIrisRepeatedExperiment()
-		return
-	}
-
-	if *runIrisExperiment {
-		RunIrisExperiment(*seed)
+	} else if *irisExperiment {
+		if *repeated && *parallel {
+			RunIrisRepeatedParallelExperiment()
+		} else if *repeated {
+			RunIrisRepeatedExperiment()
+		} else if *parallel {
+			IrisParallelExperiment(*seed, 4)
+		} else {
+			RunIrisExperiment(*seed)
+		}
 		return
 	}
 

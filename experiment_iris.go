@@ -60,6 +60,246 @@ func load() {
 	}
 }
 
+// IrisNetwork is an irs neural network
+type IrisNetwork struct {
+	Rnd           *rand.Rand
+	Iris          []*iris.Iris
+	BatchSize     int
+	Input, Output *tf32.V
+	Parameters    []*tf32.V
+	Genome        [][]*tf32.V
+	Cost          tf32.Meta
+	Fitness       float32
+}
+
+// NewIrisNetwork creates a new iris network
+func NewIrisNetwork(rnd *rand.Rand, seed int64, width, depth int) IrisNetwork {
+	once.Do(load)
+
+	random32 := func(a, b float32) float32 {
+		if rnd == nil {
+			return 0
+		}
+		return (b-a)*rnd.Float32() + a
+	}
+	batchSize := 10
+
+	input, output := tf32.NewV(4, batchSize), tf32.NewV(3, batchSize)
+	w1, b1, w2, b2 := tf32.NewV(4, width), tf32.NewV(width), tf32.NewV(width, 3), tf32.NewV(3)
+	parameters := []*tf32.V{&w1, &b1, &w2, &b2}
+	genome := make([][]*tf32.V, 4)
+
+	m1, m2, m1a, m2a := w1.Meta(), w2.Meta(), b1.Meta(), b2.Meta()
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(4, 4), tf32.NewV(4, width)
+		m1 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1)
+		parameters = append(parameters, &a, &b)
+		genome[0] = append(genome[0], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(width, width), tf32.NewV(width)
+		m1a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m1a)
+		parameters = append(parameters, &a, &b)
+		genome[1] = append(genome[1], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(width, width), tf32.NewV(width, 3)
+		m2 = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2)
+		parameters = append(parameters, &a, &b)
+		genome[2] = append(genome[2], &a, &b)
+	}
+	for i := 0; i < depth; i++ {
+		a, b := tf32.NewV(3, 3), tf32.NewV(3)
+		m2a = tf32.Add(tf32.Mul(a.Meta(), b.Meta()), m2a)
+		parameters = append(parameters, &a, &b)
+		genome[3] = append(genome[3], &a, &b)
+	}
+
+	for _, p := range parameters {
+		for i := 0; i < cap(p.X); i++ {
+			p.X = append(p.X, random32(-1, 1))
+		}
+	}
+
+	l1 := tf32.Sigmoid(tf32.Add(tf32.Mul(m1, input.Meta()), m1a))
+	l2 := tf32.Sigmoid(tf32.Add(tf32.Mul(m2, l1), m2a))
+	cost := tf32.Avg(tf32.CrossEntropy(l2, output.Meta()))
+
+	data := make([]*iris.Iris, len(datum.Fisher))
+	for i := range data {
+		data[i] = &datum.Fisher[i]
+	}
+
+	return IrisNetwork{
+		Rnd:        rand.New(rand.NewSource(seed)),
+		Iris:       data,
+		BatchSize:  batchSize,
+		Input:      &input,
+		Output:     &output,
+		Parameters: parameters,
+		Genome:     genome,
+		Cost:       cost,
+	}
+}
+
+// Fit get the fitness of the network
+func (i *IrisNetwork) Fit() float32 {
+	length := len(i.Iris)
+	total := float32(0.0)
+	for j := 0; j < length; j += i.BatchSize {
+		inputs, outputs := make([]float32, 0, 4*i.BatchSize), make([]float32, 0, 3*i.BatchSize)
+		for k := 0; k < i.BatchSize; k++ {
+			index := (j + k) % length
+			for _, measure := range i.Iris[index].Measures {
+				inputs = append(inputs, float32(measure))
+			}
+			out := make([]float32, 3)
+			out[iris.Labels[i.Iris[index].Label]] = 1
+			outputs = append(outputs, out...)
+		}
+		i.Input.Set(inputs)
+		i.Output.Set(outputs)
+		total += tf32.Gradient(i.Cost).X[0]
+	}
+	i.Fitness = total
+	return total
+}
+
+// Mutate mutates the network with gradient descent
+func (i *IrisNetwork) Mutate() float32 {
+	length := len(i.Iris)
+	for a := range i.Iris {
+		b := a + i.Rnd.Intn(length-a)
+		i.Iris[a], i.Iris[b] = i.Iris[b], i.Iris[a]
+	}
+
+	total := float32(0.0)
+	for j := 0; j < length; j += i.BatchSize {
+		for _, p := range i.Parameters {
+			p.Zero()
+		}
+
+		inputs, outputs := make([]float32, 0, 4*i.BatchSize), make([]float32, 0, 3*i.BatchSize)
+		for k := 0; k < i.BatchSize; k++ {
+			index := (j + k) % length
+			for _, measure := range i.Iris[index].Measures {
+				inputs = append(inputs, float32(measure))
+			}
+			out := make([]float32, 3)
+			out[iris.Labels[i.Iris[index].Label]] = 1
+			outputs = append(outputs, out...)
+		}
+		i.Input.Set(inputs)
+		i.Output.Set(outputs)
+		total += tf32.Gradient(i.Cost).X[0]
+		eta, norm := float32(.1), float32(0)
+		for _, p := range i.Parameters {
+			for _, d := range p.D {
+				norm += d * d
+			}
+		}
+		norm = float32(math.Sqrt(float64(norm)))
+		if norm > 1 {
+			scaling := 1 / norm
+			for _, p := range i.Parameters {
+				for l, d := range p.D {
+					d *= scaling
+					p.X[l] -= eta * d
+				}
+			}
+		} else {
+			for _, p := range i.Parameters {
+				for l, d := range p.D {
+					p.X[l] -= eta * d
+				}
+			}
+		}
+	}
+	i.Fitness = total
+	return total
+}
+
+// IrisParallelExperiment runs parallel version of experiment
+func IrisParallelExperiment(seed int64, depth int) (generatrions int) {
+	rnd := rand.New(rand.NewSource(seed))
+	networks := make([]IrisNetwork, 100)
+	for i := range networks {
+		networks[i] = NewIrisNetwork(rnd, seed+int64(i), 3, depth)
+	}
+	done := make(chan float32, 8)
+	fit := func(n *IrisNetwork) {
+		done <- n.Fit()
+	}
+	mutate := func(n *IrisNetwork) {
+		done <- n.Mutate()
+	}
+
+	generatrions, rnd = 1000, rand.New(rand.NewSource(seed))
+	for i := 0; i < 1000; i++ {
+		for j := range networks {
+			go mutate(&networks[j])
+		}
+		for j := 0; j < 100; j++ {
+			<-done
+		}
+
+		tf32.Static.InferenceOnly = true
+		for j := range networks {
+			go fit(&networks[j])
+		}
+		for j := 0; j < 100; j++ {
+			<-done
+		}
+		tf32.Static.InferenceOnly = false
+		sort.Slice(networks, func(i, j int) bool {
+			return networks[i].Fitness < networks[j].Fitness
+		})
+		//fmt.Println(i, networks[0].Fitness)
+		if networks[0].Fitness < 13/float32(networks[0].BatchSize) {
+			generatrions = i
+			break
+		}
+
+		index := 50
+		for j := 0; j < 25; j++ {
+			a, b := rnd.Intn(50), rnd.Intn(50)
+			for a == b {
+				b = rnd.Intn(50)
+			}
+
+			childa := &networks[index]
+			for k, p := range childa.Parameters {
+				copy(p.X, networks[a].Parameters[k].X)
+			}
+			index++
+
+			childb := &networks[index]
+			for k, p := range childb.Parameters {
+				copy(p.X, networks[b].Parameters[k].X)
+			}
+			index++
+
+			set, x, y := rnd.Intn(4), rnd.Intn(depth), rnd.Intn(depth)
+			childa.Genome[set][x*2].X, childb.Genome[set][y*2].X =
+				childb.Genome[set][y*2].X, childa.Genome[set][x*2].X
+			childa.Genome[set][x*2+1].X, childb.Genome[set][y*2+1].X =
+				childb.Genome[set][y*2+1].X, childa.Genome[set][x*2+1].X
+		}
+	}
+	return
+}
+
+// RunIrisRepeatedParallelExperiment runs iris prarallel experiment repeatedly
+func RunIrisRepeatedParallelExperiment() {
+	total := 0
+	for i := 0; i < 256; i++ {
+		generations := IrisParallelExperiment(int64(i)+1, 4)
+		total += generations
+		fmt.Println(i, generations, float64(total)/float64(i+1))
+	}
+	fmt.Printf("generations=%f\n", float64(total)/256)
+}
+
 // IrisExperiment iris neural network experiment
 func IrisExperiment(seed int64, width, depth int, optimizer Optimizer, batch, inception, dct, context bool) Result {
 	once.Do(load)
